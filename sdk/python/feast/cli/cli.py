@@ -423,6 +423,76 @@ def materialize_incremental_command(ctx: click.Context, end_ts: str, views: List
     )
 
 
+@cli.command("export-latest")
+@click.argument("feature_view")
+@click.option(
+    "--start",
+    "-s",
+    help="Start date for the time window in ISO 8601 format (e.g., '2021-07-16T19:20:01'). "
+    "If not specified, defaults to end date minus the feature view's TTL.",
+    default=None,
+)
+@click.option(
+    "--end",
+    "-e",
+    help="End date for the time window in ISO 8601 format (e.g., '2021-07-16T19:20:01'). "
+    "If not specified, defaults to the current time.",
+    default=None,
+)
+@click.option(
+    "--output",
+    "-o",
+    help="Output path for the exported Parquet file. If not specified, prints summary statistics.",
+    default=None,
+)
+@click.pass_context
+def export_latest_command(
+    ctx: click.Context,
+    feature_view: str,
+    start: Optional[str],
+    end: Optional[str],
+    output: Optional[str],
+):
+    """
+    Export the latest feature values per entity from a feature view.
+
+    This command retrieves the most recent feature values for each unique entity key
+    within the specified time window from the offline store. This is useful for exporting
+    the current state of features for online serving or external processing.
+
+    Example:
+        feast export-latest driver_hourly_stats --output latest_features.parquet
+        feast export-latest driver_hourly_stats --start 2021-07-16T00:00:00 --end 2021-07-17T00:00:00
+    """
+    store = create_feature_store(ctx)
+
+    # Parse dates
+    start_date = utils.make_tzaware(parser.parse(start)) if start else None
+    end_date = utils.make_tzaware(parser.parse(end)) if end else None
+
+    # Get the latest features
+    job = store.get_latest_features(
+        feature_view=feature_view,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    # Either write to file or print summary
+    if output:
+        df = job.to_df()
+        df.to_parquet(output, index=False)
+        click.echo(
+            f"{Style.BRIGHT + Fore.GREEN}Exported {len(df)} rows to {output}{Style.RESET_ALL}"
+        )
+    else:
+        df = job.to_df()
+        click.echo(f"\n{Style.BRIGHT}Feature View:{Style.RESET_ALL} {feature_view}")
+        click.echo(f"{Style.BRIGHT}Total rows:{Style.RESET_ALL} {len(df)}")
+        click.echo(f"{Style.BRIGHT}Columns:{Style.RESET_ALL} {', '.join(df.columns.tolist())}")
+        click.echo(f"\n{Style.BRIGHT}Preview (first 10 rows):{Style.RESET_ALL}")
+        click.echo(df.head(10).to_string())
+
+
 @cli.command("init")
 @click.argument("PROJECT_DIRECTORY", required=False)
 @click.option(
