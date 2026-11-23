@@ -1419,6 +1419,99 @@ class FeatureStore:
 
         return job
 
+    def get_latest_features(
+        self,
+        feature_view: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+    ) -> RetrievalJob:
+        """
+        Retrieve the latest feature values per entity from the offline store for a given feature view.
+
+        This method pulls the most recent feature values for each unique entity key within the specified
+        time window. It is useful for exporting the current state of features for online serving or
+        external processing. The method uses the same underlying mechanism as materialization
+        (pull_latest_from_table_or_query) but exposes it as a public API.
+
+        Args:
+            feature_view: The name of the feature view to retrieve features from.
+            start_date: Start of the time window. If not specified, defaults to (end_date - TTL) where
+                TTL is the feature view's configured time-to-live. If TTL is 0 or None, uses a large
+                historical window (365 days ago).
+            end_date: End of the time window. If not specified, defaults to the current time.
+
+        Returns:
+            RetrievalJob: A retrieval job that can be converted to a DataFrame with to_df() or
+                to_arrow(), or persisted to storage with persist() or to_remote_storage().
+
+        Raises:
+            FeatureViewNotFoundException: If the specified feature view does not exist.
+            ValueError: If the feature view has no batch source configured.
+
+        Examples:
+            Export the latest features for a feature view to a Parquet file.
+
+            >>> from feast import FeatureStore
+            >>> from feast.infra.offline_stores.file import SavedDatasetFileStorage
+            >>> fs = FeatureStore(repo_path="feature_repo")
+            >>> job = fs.get_latest_features(feature_view="driver_hourly_stats")
+            >>> df = job.to_df()
+            >>> df.to_parquet("latest_features.parquet")
+
+            Export with a custom time window.
+
+            >>> from datetime import datetime, timedelta
+            >>> end = datetime.now()
+            >>> start = end - timedelta(hours=24)
+            >>> job = fs.get_latest_features(
+            ...     feature_view="driver_hourly_stats",
+            ...     start_date=start,
+            ...     end_date=end,
+            ... )
+            >>> df = job.to_df()
+        """
+        # Get the feature view object
+        feature_views = [fv for fv in self.list_feature_views() if fv.name == feature_view]
+        if not feature_views:
+            raise FeatureViewNotFoundException(feature_view)
+        
+        fv = feature_views[0]
+        
+        # Validate that the feature view has a batch source
+        if not fv.batch_source:
+            raise ValueError(
+                f"Feature view '{feature_view}' has no batch source configured. "
+                f"Cannot retrieve features from the offline store."
+            )
+
+        # Set default end_date to now
+        if end_date is None:
+            end_date = _utc_now()
+
+        # Set default start_date based on TTL
+        if start_date is None:
+            if fv.ttl and fv.ttl.total_seconds() > 0:
+                start_date = end_date - fv.ttl
+            else:
+                # If TTL is 0 or None, use a large historical window
+                start_date = end_date - timedelta(days=365)
+
+        # Get the provider and call pull_latest_from_table_or_query
+        provider = self._get_provider()
+        
+        job = provider.offline_store.pull_latest_from_table_or_query(
+            config=self.config,
+            data_source=fv.batch_source,
+            join_key_columns=fv.entities,
+            feature_name_columns=[f.name for f in fv.features],
+            timestamp_field=fv.batch_source.timestamp_field,
+            created_timestamp_column=getattr(fv.batch_source, "created_timestamp_column", None),
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+        return job
+
     def create_saved_dataset(
         self,
         from_: RetrievalJob,
